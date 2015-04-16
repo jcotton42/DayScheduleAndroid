@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -24,27 +26,26 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.Date;
 
 public class MainActivity extends Activity {
+    public final static String REFRESH_SETTINGS = "REFRESH_SETTINGS";
+    public final static String DATE_FORMAT_DEFAULT = "yyyy-MM-dd";
+    public final static String PREFS_NAME = "DaySchedulePrefs";
     final static Uri baseUri = Uri.parse("https://iodine.tjhsst.edu/ajax/dayschedule/json_exp");
-    final SimpleDateFormat dayFormatter = new SimpleDateFormat("yyyyMMdd");
-    final SimpleDateFormat timeFormatter = new SimpleDateFormat("HH:mm");
+    static SimpleDateFormat dayFormatter;
+    static final SimpleDateFormat timeFormatter = new SimpleDateFormat("HH:mm");
     final static CloseableHttpClient client = HttpClients.createDefault();
     final static HttpGet getter = new HttpGet();
     ArrayAdapter<Period> periodsAdapter;
@@ -64,10 +65,25 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        switch(intent.getAction()) {
+            case REFRESH_SETTINGS:
+                loadSettings();
+                break;
+        }
+    }
+
+    private void loadSettings() {
+        SharedPreferences settings = getSharedPreferences(PREFS_NAME, 0);
+        dayFormatter = new SimpleDateFormat(settings.getString("dateFormat", DATE_FORMAT_DEFAULT));
+        periodsAdapter.notifyDataSetChanged(); // icky hack
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
         periodsView = (ListView)findViewById(R.id.periods);
         dayName = (TextView)findViewById(R.id.dayName);
         daySummary = (TextView)findViewById(R.id.daySummary);
@@ -83,6 +99,7 @@ public class MainActivity extends Activity {
             periods
         );
         periodsView.setAdapter(periodsAdapter);
+        loadSettings();
         if(isConnected())
             task = (GetDaysTask)new GetDaysTask(this).execute(start, end);
         else
@@ -94,13 +111,9 @@ public class MainActivity extends Activity {
         dialog.setProgressStyle(ProgressDialog.STYLE_SPINNER);
         dialog.setMessage(getString(R.string.waitMessage));
         dialog.setIndeterminate(true);
-        try(BufferedReader reader = new BufferedReader(new FileReader(getCacheDir().getAbsolutePath() + "/cache.json"))) {
+        try(JsonReader reader = new JsonReader(new FileReader(getCacheDir().getAbsolutePath() + "/cache.json"))) {
             dialog.show();
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while((line = reader.readLine()) != null)
-                sb.append(line).append("\n");
-            days = jsonToDays(sb.toString(), start, end);
+            days = jsonToDays(reader);
         } catch(FileNotFoundException e) {
             // by this point we're not net connected
             new AlertDialog.Builder(this)
@@ -133,8 +146,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private ArrayList<Day> jsonToDays(JsonReader reader, Calendar start, Calendar end) {
-
+    private ArrayList<Day> jsonToDays(JsonReader reader) throws IOException {
+        ArrayList<Day> days = new ArrayList<>();
+        reader.beginObject();
+        while(reader.hasNext())
+            days.add(Day.readJson(reader));
+        reader.endObject();
+        return days;
     }
 
     @Override
@@ -158,7 +176,7 @@ public class MainActivity extends Activity {
 
         //noinspection SimplifiableIfStatement
         if(id == R.id.action_settings) {
-            return true;
+            startActivity(new Intent(getBaseContext(), SettingsActivity.class));
         }
 
         return super.onOptionsItemSelected(item);
@@ -170,7 +188,7 @@ public class MainActivity extends Activity {
                 dayIndex = days.size() - 1;
                 start.add(Calendar.DATE, -7);
                 end.add(Calendar.DATE, -7);
-            } else if(index >= days.size()) {
+            } else {
                 dayIndex = 0;
                 start.add(Calendar.DATE, 7);
                 end.add(Calendar.DATE, 7);
@@ -191,82 +209,6 @@ public class MainActivity extends Activity {
 
     public void previousDay(View view) {
         setDay(dayIndex - 1);
-    }
-
-    class Day {
-        Date date;
-        ArrayList<Period> periods;
-        String name;
-        String summary;
-
-        Day(ArrayList<Period> periods, String name, String summary, Date date) {
-            this.periods = periods;
-            this.name = name;
-            this.summary = summary;
-            this.date = date;
-        }
-
-        public void writeJson(JsonWriter writer) throws IOException {
-            Calendar tomorrow = Calendar.getInstance();
-            tomorrow.setTime(date);
-            Calendar yesterday = (Calendar)tomorrow.clone();
-            tomorrow.add(Calendar.DATE, 1);
-            yesterday.add(Calendar.DATE, -1);
-            writer.name(dayFormatter.format(date));
-            writer.beginObject();
-            writer.name("dayname").value(name);
-            writer.name("summary").value(summary);
-            writer.name("date")
-                    .beginObject()
-                        .name("tomorrow").value(dayFormatter.format(tomorrow.getTime()))
-                        .name("yesterday").value(dayFormatter.format(yesterday.getTime()))
-                        .name("today").value(dayFormatter.format(date))
-                    .endObject();
-            writer.name("schedule");
-            writer.beginObject();
-            writer.name("date").value(dayFormatter.format(date));
-            writer.name("period");
-            writer.beginArray();
-            for(Period period : periods) {
-                period.writeJson(writer);
-            }
-            writer.endArray(); // period
-            writer.endObject(); // schedule
-            writer.endObject(); // day
-        }
-    }
-
-    class Period {
-        int number;
-        String name;
-        Date start;
-        Date end;
-
-        Period(int number, String name, Date start, Date end) {
-            this.number = number;
-            this.name = name;
-            this.start = start;
-            this.end = end;
-        }
-
-        @Override
-        public String toString() {
-            return String.format("%s: %tR - %tR", this.name, this.start, this.end);
-        }
-
-        public void writeJson(JsonWriter writer) throws IOException {
-            writer
-                    .beginObject()
-                    .name("num").value(number)
-                    .name("name").value(name)
-                    .name("times")
-                        .beginObject()
-                        .name("start").value(timeFormatter.format(start))
-                        .name("end").value(timeFormatter.format(end))
-                        .name("times").value(timeFormatter.format(start) + " - " + timeFormatter.format(end))
-                        .endObject()
-                    .endObject();
-        }
     }
 
     class GetDaysTask extends AsyncTask<Calendar, Void, ArrayList<Day>> {
@@ -298,8 +240,7 @@ public class MainActivity extends Activity {
                 e.printStackTrace();
             }
             try(CloseableHttpResponse response = client.execute(getter)) {
-                String body = EntityUtils.toString(response.getEntity());
-                days = jsonToDays(body, start, end);
+                days = jsonToDays(new JsonReader(new InputStreamReader(response.getEntity().getContent())));
             } catch(IOException e) {
                 throw new RuntimeException(e);
             }
