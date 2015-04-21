@@ -14,9 +14,9 @@ import java.util.Arrays;
 
 
 public class SettingsActivity extends Activity {
-    Spinner dateFormat;
-    SharedPreferences settings;
-    SharedPreferences.Editor editor;
+    private Spinner dateFormat;
+    private SharedPreferences settings;
+    private SharedPreferences.Editor editor;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
